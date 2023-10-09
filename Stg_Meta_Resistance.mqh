@@ -28,11 +28,6 @@ INPUT2 short Meta_Resistance_Shift = 0;                  // Shift
 INPUT2 float Meta_Resistance_OrderCloseLoss = 200;       // Order close loss
 INPUT2 float Meta_Resistance_OrderCloseProfit = 200;     // Order close profit
 INPUT2 int Meta_Resistance_OrderCloseTime = 2880;        // Order close time in mins (>0) or bars (<0)
-INPUT_GROUP("Meta Resistance strategy: RSI oscillator params");
-INPUT int Meta_Resistance_RSI_Period = 16;                                    // Period
-INPUT ENUM_APPLIED_PRICE Meta_Resistance_RSI_Applied_Price = PRICE_WEIGHTED;  // Applied Price
-INPUT int Meta_Resistance_RSI_Shift = 0;                                      // Shift
-INPUT ENUM_IDATA_SOURCE_TYPE Meta_Resistance_RSI_SourceType = IDATA_BUILTIN;  // Source type
 
 // Structs.
 // Defines struct with default user strategy values.
@@ -55,10 +50,11 @@ struct Stg_Meta_Resistance_Params_Defaults : StgParams {
 class Stg_Meta_Resistance : public Strategy {
  protected:
   Ref<Strategy> strat;
+  Trade strade;
 
  public:
   Stg_Meta_Resistance(StgParams &_sparams, TradeParams &_tparams, ChartParams &_cparams, string _name = "")
-      : Strategy(_sparams, _tparams, _cparams, _name) {}
+      : Strategy(_sparams, _tparams, _cparams, _name), strade(_tparams, _cparams) {}
 
   static Stg_Meta_Resistance *Init(ENUM_TIMEFRAMES _tf = NULL, EA *_ea = NULL) {
     // Initialize strategy initial values.
@@ -77,13 +73,7 @@ class Stg_Meta_Resistance : public Strategy {
   void OnInit() {
     SetStrategy(Meta_Resistance_Strategy);
     // Initialize indicators.
-    {
-      IndiRSIParams _indi_params(::Meta_Resistance_RSI_Period, ::Meta_Resistance_RSI_Applied_Price,
-                                 ::Meta_Resistance_RSI_Shift);
-      _indi_params.SetDataSourceType(::Meta_Resistance_RSI_SourceType);
-      _indi_params.SetTf(PERIOD_D1);
-      SetIndicator(new Indi_RSI(_indi_params));
-    }
+    {}
   }
 
   /**
@@ -291,23 +281,101 @@ class Stg_Meta_Resistance : public Strategy {
   }
 
   /**
-   * Check strategy's opening signal.
+   * Gets resistance ratio value (-1.0-1.0).
    */
-  bool SignalOpen(ENUM_ORDER_TYPE _cmd, int _method, float _level = 0.0f, int _shift = 0) {
-    bool _result = true;
+  float GetResistanceRatio() {
+    float _lots_buy = 0.0f;
+    if (strade.Get<bool>(TRADE_STATE_ORDERS_ACTIVE)) {
+      DictStruct<long, Ref<Order>> _orders_active = strade.GetOrdersActive();
+      Ref<OrderQuery> _oquery_ref;
+      if (_orders_active.Size() > 0) {
+        _lots_buy =
+            _oquery_ref.Ptr()
+                .CalcSumByPropWithCond<ENUM_ORDER_PROPERTY_DOUBLE, ENUM_ORDER_PROPERTY_INTEGER, ENUM_ORDER_TYPE, float>(
+                    ORDER_VOLUME_CURRENT, ORDER_TYPE, ORDER_TYPE_BUY);
+        /*
+        float _lots_per_type =
+            _oquery_ref.Ptr()
+                .FindPropBySum<float, ENUM_ORDER_PROPERTY_DOUBLE, ENUM_ORDER_PROPERTY_INTEGER, float>(
+                    _order_types1, ORDER_VOLUME_CURRENT, ORDER_TYPE);
+                    */
+      }
+    }
+    return _lots_buy;
+  }
+
+  /**
+   * Loads active orders by magic number.
+   */
+  bool OrdersLoadByMagic() {
+    ResetLastError();
+    int _total_active = TradeStatic::TotalActive();
+    unsigned long _magic_no = strade.Get<long>(TRADE_PARAM_MAGIC_NO);
+    DictStruct<long, Ref<Order>> _orders_active = strade.GetOrdersActive();
+    for (int pos = 0; pos < _total_active; pos++) {
+      if (OrderStatic::SelectByPosition(pos)) {
+        unsigned long _magic_no_order = OrderStatic::MagicNumber();
+        if (_magic_no_order == _magic_no) {
+          unsigned long _ticket = OrderStatic::Ticket();
+          if (!_orders_active.KeyExists(_ticket)) {
+            Ref<Order> _order = new Order(_ticket);
+            _orders_active.Set(_ticket, _order);
+          }
+        }
+      }
+    }
+    return GetLastError() == ERR_NO_ERROR;
+  }
+
+  /**
+   * Event on new time periods.
+   */
+  virtual void OnPeriod(unsigned int _periods = DATETIME_NONE) {
+    if ((_periods & DATETIME_HOUR) != 0) {
+      // New hour started.
+      OrdersLoadByMagic();
+    }
+  }
+
+  /**
+   * Gets price stop value.
+   */
+  float PriceStop(ENUM_ORDER_TYPE _cmd, ENUM_ORDER_TYPE_VALUE _mode, int _method = 0, float _level = 0.0f,
+                  short _bars = 4) {
+    float _result = 0;
+    if (_method == 0) {
+      // Ignores calculation when method is 0.
+      return (float)_result;
+    }
     if (!strat.IsSet()) {
       // Returns false when strategy is not set.
       return false;
     }
-    IndicatorBase *_indi = GetIndicator();
+    _level = _level == 0.0f ? strat.Ptr().Get<float>(STRAT_PARAM_SOL) : _level;
+    _method = strat.Ptr().Get<int>(STRAT_PARAM_SOM);
+    //_shift = _shift == 0 ? _strat_ref.Ptr().Get<int>(STRAT_PARAM_SHIFT) : _shift;
+    _result = strat.Ptr().PriceStop(_cmd, _mode, _method, _level /*, _shift*/);
+    return (float)_result;
+  }
+
+  /**
+   * Check strategy's opening signal.
+   */
+  bool SignalOpen(ENUM_ORDER_TYPE _cmd, int _method, float _level = 0.0f, int _shift = 0) {
+    bool _result = true;
+    float _resistance_value = GetResistanceRatio();
+    if (!strat.IsSet()) {
+      // Returns false when strategy is not set.
+      return false;
+    }
     // uint _ishift = _indi.GetShift();
     uint _ishift = _shift;
     switch (_cmd) {
       case ORDER_TYPE_BUY:
-        _result &= _indi[_shift][0] >= 50 - _level && _indi[_shift + 1][0] >= 50 - _level;
+        // _result &= _indi[_shift][0] >= 50 - _level && _indi[_shift + 1][0] >= 50 - _level;
         break;
       case ORDER_TYPE_SELL:
-        _result &= _indi[_shift][0] <= 50 + _level && _indi[_shift + 1][0] <= 50 + _level;
+        // _result &= _indi[_shift][0] <= 50 + _level && _indi[_shift + 1][0] <= 50 + _level;
         break;
     }
     _level = _level == 0.0f ? strat.Ptr().Get<float>(STRAT_PARAM_SOL) : _level;
@@ -326,13 +394,12 @@ class Stg_Meta_Resistance : public Strategy {
       // Returns false when strategy is not set.
       return false;
     }
-    IndicatorBase *_indi = GetIndicator();
     switch (_cmd) {
       case ORDER_TYPE_BUY:
-        _result &= _indi[_shift][0] <= 50 + _level && _indi[_shift + 1][0] <= 50 + _level;
+        // _result &= _indi[_shift][0] <= 50 + _level && _indi[_shift + 1][0] <= 50 + _level;
         break;
       case ORDER_TYPE_SELL:
-        _result &= _indi[_shift][0] >= 50 - _level && _indi[_shift + 1][0] >= 50 - _level;
+        // _result &= _indi[_shift][0] >= 50 - _level && _indi[_shift + 1][0] >= 50 - _level;
         break;
     }
     return _result;
