@@ -6,7 +6,7 @@
 
 /**
  * @file
- * Implements Trend meta strategy.
+ * Implements Resistance meta strategy.
  */
 
 // Includes the main code.
