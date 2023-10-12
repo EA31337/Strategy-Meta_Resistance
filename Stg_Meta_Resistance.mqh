@@ -9,10 +9,10 @@
 
 // User input params.
 INPUT2_GROUP("Meta Resistance strategy: main params");
-INPUT2 ENUM_STRATEGY Meta_Resistance_Strategy = STRAT_STOCHASTIC;  // Strategy to filter by trend
+INPUT2 ENUM_STRATEGY Meta_Resistance_Strategy = STRAT_OSCILLATOR_CROSS;  // Strategy
 INPUT2_GROUP("Meta Resistance strategy: common params");
 INPUT2 float Meta_Resistance_LotSize = 0;                // Lot size
-INPUT2 int Meta_Resistance_SignalOpenMethod = 0;         // Signal open method
+INPUT2 int Meta_Resistance_SignalOpenMethod = 3;         // Signal open method
 INPUT2 float Meta_Resistance_SignalOpenLevel = 0;        // Signal open level
 INPUT2 int Meta_Resistance_SignalOpenFilterMethod = 32;  // Signal open filter method
 INPUT2 int Meta_Resistance_SignalOpenFilterTime = 3;     // Signal open filter time (0-31)
@@ -286,7 +286,7 @@ class Stg_Meta_Resistance : public Strategy {
    * @returns
    *   Returns ratio of buys and sells between -1.0 and 1.0.
    */
-  float GetLotsRatio() {
+  float GetLotsRatio(int _shift = 0) {
     float _lots_buys = 0.0f, _lots_sells = 0.0f, _lots_ratio = 0.0f;
     if (strade.Get<bool>(TRADE_STATE_ORDERS_ACTIVE)) {
       DictStruct<long, Ref<Order>> _orders_active = strade.GetOrdersActive();
@@ -314,10 +314,21 @@ class Stg_Meta_Resistance : public Strategy {
    * @returns
    *   Returns resistance ratio between -1.0 and 1.0.
    */
-  float GetResistanceRatio() {
-    float _res_ratio = 0.0f;
-    // @todo
-    return _res_ratio;
+  float GetResistanceRatio(int _shift = 0) {
+    double _res_ratio = 0.0f;
+    Chart *_chart = trade.GetChart();
+    ChartEntry _ohlc_d1_0 = _chart.GetEntry(PERIOD_D1, _shift, _chart.GetSymbol());
+    ChartEntry _ohlc_d1_1 = _chart.GetEntry(PERIOD_D1, _shift + 1, _chart.GetSymbol());
+    double _high0 = _chart.GetHigh(PERIOD_D1, _shift);
+    double _high1 = _chart.GetHigh(PERIOD_D1, _shift + 1);
+    double _low0 = _chart.GetLow(PERIOD_D1, _shift);
+    double _low1 = _chart.GetLow(PERIOD_D1, _shift + 1);
+    double _high = fmax(_high0, _high1);
+    double _low = fmin(_low0, _low1);
+    double _open = _chart.GetOpen(_shift);
+    double _range = (_high - _low);
+    _res_ratio = 2.0 * (_open - _low) / _range - 1.0;
+    return (float)_res_ratio;
   }
 
   /**
@@ -365,6 +376,7 @@ class Stg_Meta_Resistance : public Strategy {
       // New day started.
       DictStruct<long, Ref<Order>> _orders_active = strade.GetOrdersActive();
       _orders_active.Clear();
+      OrdersLoadByMagic();
     }
   }
 
@@ -394,26 +406,35 @@ class Stg_Meta_Resistance : public Strategy {
    */
   bool SignalOpen(ENUM_ORDER_TYPE _cmd, int _method, float _level = 0.0f, int _shift = 0) {
     bool _result = true;
-    float _lots_ratio= GetLotsRatio();
-    float _resistance_ratio = GetResistanceRatio();
     if (!strat.IsSet()) {
       // Returns false when strategy is not set.
       return false;
     }
     // uint _ishift = _indi.GetShift();
-    uint _ishift = _shift;
-    switch (_cmd) {
-      case ORDER_TYPE_BUY:
-        // _result &= _indi[_shift][0] >= 50 - _level && _indi[_shift + 1][0] >= 50 - _level;
-        break;
-      case ORDER_TYPE_SELL:
-        // _result &= _indi[_shift][0] <= 50 + _level && _indi[_shift + 1][0] <= 50 + _level;
-        break;
-    }
     _level = _level == 0.0f ? strat.Ptr().Get<float>(STRAT_PARAM_SOL) : _level;
     _method = _method == 0 ? strat.Ptr().Get<int>(STRAT_PARAM_SOM) : _method;
     _shift = _shift == 0 ? strat.Ptr().Get<int>(STRAT_PARAM_SHIFT) : _shift;
     _result &= strat.Ptr().SignalOpen(_cmd, _method, _level, _shift);
+    if (_result) {
+      float _lots_ratio = GetLotsRatio(_shift);
+      float _resistance_ratio = GetResistanceRatio(_shift);
+      switch (_cmd) {
+        case ORDER_TYPE_BUY:
+          _result &= _lots_ratio != 1.0;
+          if (_result && _method != 0) {
+            if (METHOD(_method, 0)) _result &= _resistance_ratio < 0;
+            if (METHOD(_method, 1)) _result &= _resistance_ratio <= _lots_ratio;
+          }
+          break;
+        case ORDER_TYPE_SELL:
+          _result &= _lots_ratio != -1.0;
+          if (_result && _method != 0) {
+            if (METHOD(_method, 0)) _result &= _resistance_ratio > 0;
+            if (METHOD(_method, 1)) _result &= _resistance_ratio >= _lots_ratio;
+          }
+          break;
+      }
+    }
     return _result;
   }
 
@@ -421,19 +442,8 @@ class Stg_Meta_Resistance : public Strategy {
    * Check strategy's closing signal.
    */
   bool SignalClose(ENUM_ORDER_TYPE _cmd, int _method, float _level = 0.0f, int _shift = 0) {
-    bool _result = true;
-    if (!strat.IsSet()) {
-      // Returns false when strategy is not set.
-      return false;
-    }
-    switch (_cmd) {
-      case ORDER_TYPE_BUY:
-        // _result &= _indi[_shift][0] <= 50 + _level && _indi[_shift + 1][0] <= 50 + _level;
-        break;
-      case ORDER_TYPE_SELL:
-        // _result &= _indi[_shift][0] >= 50 - _level && _indi[_shift + 1][0] >= 50 - _level;
-        break;
-    }
+    bool _result = false;
+    _result = SignalOpen(Order::NegateOrderType(_cmd), _method, _level, _shift);
     return _result;
   }
 };
