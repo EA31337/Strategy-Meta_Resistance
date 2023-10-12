@@ -281,27 +281,43 @@ class Stg_Meta_Resistance : public Strategy {
   }
 
   /**
-   * Gets resistance ratio value (-1.0-1.0).
+   * Gets lots ratio value.
+   *
+   * @returns
+   *   Returns ratio of buys and sells between -1.0 and 1.0.
    */
-  float GetResistanceRatio() {
-    float _lots_buy = 0.0f;
+  float GetLotsRatio() {
+    float _lots_buys = 0.0f, _lots_sells = 0.0f, _lots_ratio = 0.0f;
     if (strade.Get<bool>(TRADE_STATE_ORDERS_ACTIVE)) {
       DictStruct<long, Ref<Order>> _orders_active = strade.GetOrdersActive();
       Ref<OrderQuery> _oquery_ref;
       if (_orders_active.Size() > 0) {
-        _lots_buy =
+        _oquery_ref = OrderQuery::GetInstance(_orders_active);
+        _lots_buys =
             _oquery_ref.Ptr()
                 .CalcSumByPropWithCond<ENUM_ORDER_PROPERTY_DOUBLE, ENUM_ORDER_PROPERTY_INTEGER, ENUM_ORDER_TYPE, float>(
                     ORDER_VOLUME_CURRENT, ORDER_TYPE, ORDER_TYPE_BUY);
-        /*
-        float _lots_per_type =
+        _lots_sells =
             _oquery_ref.Ptr()
-                .FindPropBySum<float, ENUM_ORDER_PROPERTY_DOUBLE, ENUM_ORDER_PROPERTY_INTEGER, float>(
-                    _order_types1, ORDER_VOLUME_CURRENT, ORDER_TYPE);
-                    */
+                .CalcSumByPropWithCond<ENUM_ORDER_PROPERTY_DOUBLE, ENUM_ORDER_PROPERTY_INTEGER, ENUM_ORDER_TYPE, float>(
+                    ORDER_VOLUME_CURRENT, ORDER_TYPE, ORDER_TYPE_SELL);
+        float _lots_max = fmax(_lots_buys, _lots_sells);
+        _lots_ratio = (1 / _lots_max * _lots_buys) - (1 / _lots_max * _lots_sells);
       }
     }
-    return _lots_buy;
+    return _lots_ratio;
+  }
+
+  /**
+   * Gets resistance ratio value.
+   *
+   * @returns
+   *   Returns resistance ratio between -1.0 and 1.0.
+   */
+  float GetResistanceRatio() {
+    float _res_ratio = 0.0f;
+    // @todo
+    return _res_ratio;
   }
 
   /**
@@ -310,8 +326,8 @@ class Stg_Meta_Resistance : public Strategy {
   bool OrdersLoadByMagic() {
     ResetLastError();
     int _total_active = TradeStatic::TotalActive();
-    unsigned long _magic_no = strade.Get<long>(TRADE_PARAM_MAGIC_NO);
-    DictStruct<long, Ref<Order>> _orders_active = strade.GetOrdersActive();
+    unsigned long _magic_no = Get<long>(STRAT_PARAM_ID);  // strade.Get<long>(TRADE_PARAM_MAGIC_NO);
+    DictStruct<long, Ref<Order>> *_orders_active = strade.GetOrdersActive();
     for (int pos = 0; pos < _total_active; pos++) {
       if (OrderStatic::SelectByPosition(pos)) {
         unsigned long _magic_no_order = OrderStatic::MagicNumber();
@@ -319,6 +335,12 @@ class Stg_Meta_Resistance : public Strategy {
           unsigned long _ticket = OrderStatic::Ticket();
           if (!_orders_active.KeyExists(_ticket)) {
             Ref<Order> _order = new Order(_ticket);
+            _order.Ptr().Refresh(ORDER_VOLUME_CURRENT);
+            if (_order.Ptr().Get<float>(ORDER_VOLUME_CURRENT) <= 0.0f) {
+              // @fixme
+              _order.Ptr().Set(ORDER_VOLUME_CURRENT, strade.GetChart().GetVolumeMin());
+              ResetLastError();
+            }
             _orders_active.Set(_ticket, _order);
           }
         }
@@ -331,9 +353,18 @@ class Stg_Meta_Resistance : public Strategy {
    * Event on new time periods.
    */
   virtual void OnPeriod(unsigned int _periods = DATETIME_NONE) {
+    if ((_periods & DATETIME_MINUTE) != 0) {
+      // New minute started.
+      strade.UpdateStates();
+    }
     if ((_periods & DATETIME_HOUR) != 0) {
       // New hour started.
       OrdersLoadByMagic();
+    }
+    if ((_periods & DATETIME_DAY) != 0) {
+      // New day started.
+      DictStruct<long, Ref<Order>> _orders_active = strade.GetOrdersActive();
+      _orders_active.Clear();
     }
   }
 
@@ -363,7 +394,8 @@ class Stg_Meta_Resistance : public Strategy {
    */
   bool SignalOpen(ENUM_ORDER_TYPE _cmd, int _method, float _level = 0.0f, int _shift = 0) {
     bool _result = true;
-    float _resistance_value = GetResistanceRatio();
+    float _lots_ratio= GetLotsRatio();
+    float _resistance_ratio = GetResistanceRatio();
     if (!strat.IsSet()) {
       // Returns false when strategy is not set.
       return false;
