@@ -6,8 +6,8 @@
 
 /**
  * @file
- * Implements Trend meta strategy.
+ * Implements Resistance meta strategy.
  */
 
 // Includes the main code.
-#include "Stg_Meta_Trend.mq5"
+#include "Stg_Meta_Resistance.mq5"
