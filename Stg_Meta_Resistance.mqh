@@ -9,7 +9,7 @@
 
 // User input params.
 INPUT2_GROUP("Meta Resistance strategy: main params");
-INPUT2 ENUM_STRATEGY Meta_Resistance_Strategy = STRAT_OSCILLATOR_CROSS;  // Strategy
+INPUT2 ENUM_STRATEGY Meta_Resistance_Strategy = STRAT_CHAIKIN;  // Strategy
 INPUT3_GROUP("Meta Resistance strategy: common params");
 INPUT3 float Meta_Resistance_LotSize = 0;                // Lot size
 INPUT3 int Meta_Resistance_SignalOpenMethod = 3;         // Signal open method
